@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DeltaStudy Data Decoder</title>
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+</head>
+<body class="bg-gray-900 text-gray-100 min-h-screen font-sans">
+
+    <header class="bg-black p-4 border-b border-gray-800 sticky top-0 z-50">
+        <div class="max-w-6xl mx-auto flex justify-between items-center">
+            <h1 class="text-xl font-bold text-indigo-400">Δ Decoder Dashboard</h1>
+            <span class="text-xs bg-gray-800 text-gray-400 px-3 py-1 rounded-full border border-gray-700">Status: Crypto Active</span>
+        </div>
+    </header>
+
+    <main class="max-w-6xl mx-auto p-4 md:p-6 space-y-6">
+        
+        <div class="bg-gray-800 p-6 rounded-xl border border-gray-700 shadow-md">
+            <h2 class="text-lg font-semibold mb-3 text-white">Paste Encrypted Response</h2>
+            <p class="text-sm text-gray-400 mb-4">Network tab se aaya hua pura encrypted string (iv:ciphertext format) yahan paste karein.</p>
+            
+            <textarea id="encryptedInput" rows="4" 
+                class="w-full p-3 bg-gray-950 border border-gray-700 rounded-lg text-sm font-mono text-green-400 focus:outline-none focus:border-indigo-500 transition"
+                placeholder="Example: 9b66c75962088075f305083d:22913e251c1dfaa7..."></textarea>
+            
+            <button id="decryptBtn" 
+                class="mt-4 bg-indigo-600 hover:bg-indigo-500 text-white font-medium px-6 py-2.5 rounded-lg shadow transition duration-200 w-full sm:w-auto">
+                Decrypt & Render Data
+            </button>
+        </div>
+
+        <div id="outputContainer" class="hidden space-y-4">
+            <h2 class="text-lg font-semibold text-white">📦 Decrypted Content Found:</h2>
+            <div id="topicsGrid" class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                </div>
+            
+            <div class="bg-gray-800 p-4 rounded-xl border border-gray-700">
+                <h3 class="text-sm font-semibold text-gray-400 mb-2">Raw Decrypted JSON</h3>
+                <pre id="rawJson" class="text-xs font-mono bg-gray-950 p-3 rounded-lg text-indigo-300 overflow-x-auto max-h-60"></pre>
+            </div>
+        </div>
+
+    </main>
+
+    <script>
+        const textDecoder = new TextDecoder(); // [cite: 172]
+        const SECRET_KEY_STRING = "maggikhalo"; // Source code se nikali gayi key [cite: 177]
+
+        // 1. Key ko 32-bytes tak zero padding dene ka function [cite: 172, 173]
+        async function deriveKey(keyStr) {
+            const encoder = new TextEncoder();
+            const encodedKey = encoder.encode(keyStr); // [cite: 172]
+            const paddedKey = new Uint8Array(32); // [cite: 172]
+            
+            for (let i = 0; i < 32; i++) { // [cite: 173]
+                paddedKey[i] = i < encodedKey.length ? encodedKey[i] : 0; // [cite: 173, 174]
+            }
+            
+            return crypto.subtle.importKey(
+                "raw", 
+                paddedKey, 
+                { name: "AES-GCM", length: 256 }, 
+                false, 
+                ["decrypt"]
+            ); // [cite: 174]
+        }
+
+        // 2. Hex String ko Bytes mein badalne ka function [cite: 174]
+        function hexToUint8Array(hexString) {
+            const matches = hexString.match(/.{1,2}/g);
+            if (!matches) return new Uint8Array(0);
+            return new Uint8Array(matches.map(byte => parseInt(byte, 16))); // [cite: 174]
+        }
+
+        // 3. Asli Decryption Logic (Module 44269 se mapped) 
+        async function decryptPayload(encryptedData) {
+            try {
+                const [ivHex, ciphertextHex] = encryptedData.split(":"); // [cite: 175]
+                if (!ivHex || !ciphertextHex) throw new Error("Invalid payload format. Missing colon."); // [cite: 176]
+
+                const iv = hexToUint8Array(ivHex); // [cite: 177]
+                const ciphertext = hexToUint8Array(ciphertextHex); // [cite: 177]
+
+                const cryptoKey = await deriveKey(SECRET_KEY_STRING); // [cite: 179]
+                
+                // Browser ki SubtleCrypto library se AES-GCM decryption [cite: 179]
+                const decryptedBuffer = await crypto.subtle.decrypt(
+                    { name: "AES-GCM", iv: iv }, 
+                    cryptoKey, 
+                    ciphertext
+                ); // [cite: 179]
+
+                const decodedText = textDecoder.decode(decryptedBuffer); // [cite: 180]
+                return JSON.parse(decodedText); // [cite: 180]
+            } catch (error) {
+                console.error("Decryption failed:", error); // [cite: 180]
+                alert("Decryption Failed: " + error.message);
+                return null;
+            }
+        }
+
+        // 4. Decrypted Data ko HTML Cards mein Render karne ka UI logic [cite: 118, 142]
+        function renderUI(responseObj) {
+            const grid = document.getElementById("topicsGrid");
+            const rawPre = document.getElementById("rawJson");
+            const container = document.getElementById("outputContainer");
+
+            grid.innerHTML = ""; // Purana data saaf karo
+            rawPre.textContent = JSON.stringify(responseObj, null, 2);
+
+            // Check karo ki response ke andar topics ka data array hai ya nahi [cite: 117, 118]
+            const topics = responseObj?.data || []; 
+            
+            if (topics.length === 0) {
+                grid.innerHTML = `<div class="text-gray-400 p-4">No topics or chapters found in this data.</div>`;
+            } else {
+                // Har ek topic ke liye sundar card banao [cite: 142]
+                topics.forEach(topic => {
+                    const card = document.createElement("div");
+                    card.className = "bg-gray-800 p-4 rounded-xl border border-gray-700 hover:border-indigo-500 transition flex items-center space-x-4 shadow-sm";
+                    
+                    card.innerHTML = `
+                        <div class="w-1.5 h-12 bg-indigo-500 rounded-full"></div>
+                        <div class="flex-1">
+                            <h3 class="font-bold text-base text-white">${topic.name || 'Unnamed Topic'}</h3>
+                            <div class="flex items-center gap-3 text-xs text-gray-400 mt-1">
+                                <span>📹 ${topic.videos || topic.lectureVideos || 0} Videos</span>
+                                <span>|</span>
+                                <span>📝 ${topic.notes || 0} Notes</span>
+                                <span>|</span>
+                                <span>✏️ ${topic.exercises || 0} Exercises</span>
+                            </div>
+                        </div>
+                    `; // [cite: 120, 121, 122, 145, 146, 147, 160, 161, 164, 167]
+                    grid.appendChild(card);
+                });
+            }
+            container.classList.remove("hidden");
+        }
+
+        // 5. Button Click Event Listener
+        document.getElementById("decryptBtn").addEventListener("click", async () => {
+            const inputVal = document.getElementById("encryptedInput").value.trim();
+            if (!inputVal) {
+                alert("Bhai, pehle encrypted text toh daalo!");
+                return;
+            }
+
+            const decryptedData = await decryptPayload(inputVal);
+            if (decryptedData) {
+                renderUI(decryptedData);
+            }
+        });
+    </script>
+</body>
+</html>
