@@ -1,134 +1,132 @@
-// ==========================================
-// 1. CORE AES-GCM DECRYPTION SYSTEM (From Source)
-// ==========================================
+const express = require('express');
+const cors = require('cors');
+const crypto = require('crypto');
 
-const textDecoder = new TextDecoder(); // [cite: 172]
+const app = express();
 
-/**
- * Secret string se 256-bit key buffer generate karne ka function
- */
-async function deriveCryptoKey(secretText) {
-    const encoder = new TextEncoder(); // [cite: 172]
-    const encodedText = encoder.encode(secretText); // [cite: 172]
-    const keyBuffer = new Uint8Array(32); // [cite: 172]
-    
-    // Key buffer ko 32 bytes tak fill karna (Source code padding logic)
-    for (let i = 0; i < 32; i++) {
-        keyBuffer[i] = i < encodedText.length ? encodedText[i] : 0; // [cite: 173, 174]
-    }
-    
-    // Web Crypto API ke liye raw key import karna
-    return window.crypto.subtle.importKey(
-        "raw",
-        keyBuffer,
-        { name: "AES-GCM", length: 256 },
-        false,
-        ["decrypt"]
-    ); // [cite: 174]
-}
+// Middleware Setups
+app.use(cors());
+app.use(express.json());
 
-/**
- * Hex string ko Uint8Array mein convert karne ka function
- */
-function hexToUint8Array(hexString) {
-    return new Uint8Array(hexString.match(/.{1,2}/g).map(byte => parseInt(byte, 16))); // [cite: 174]
-}
+// Agar aapka frontend codes 'public' folder mein hain toh ise uncomment karein
+// app.use(express.static('public'));
 
-/**
- * Main Decryption Function jo payload ko decode karega
- */
-async function decryptPayload(encryptedData) {
+// Dynamic Timing Helper: Server status 429/500 troubleshooting ke liye delay mechanism
+const wait = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+// =================================================================
+// 1. BACKEND AES-GCM DECRYPTION SYSTEM (Secret Key: maggikhalo)
+// =================================================================
+function decryptBackendPayload(encryptedPayload) {
     try {
-        // System Check: Agar format valid encrypted string nahi hai, toh raw data return karo
-        if (typeof encryptedData !== 'string' || !encryptedData.includes(':')) {
-            return encryptedData;
+        if (typeof encryptedPayload !== 'string' || !encryptedPayload.includes(':')) {
+            return encryptedPayload;
         }
 
-        // IV aur Ciphertext ko alag-alag split karein [cite: 175]
-        const [ivHex, ciphertextHex] = encryptedData.split(":"); // [cite: 175]
-        if (!ivHex || !ciphertextHex) {
-            throw new Error("Invalid encrypted payload format."); // [cite: 176]
-        }
+        const [ivHex, encryptedHex] = encryptedPayload.split(':');
+        const secretKey = "maggikhalo";
+        const keyBuffer = Buffer.alloc(32, 0);
+        Buffer.from(secretKey, 'utf-8').copy(keyBuffer);
 
-        const iv = hexToUint8Array(ivHex); // [cite: 177]
-        const ciphertext = hexToUint8Array(ciphertextHex); // [cite: 177]
-        const secretKeyText = "maggikhalo"; // Source encryption key [cite: 177]
+        const iv = Buffer.from(ivHex, 'hex');
+        const combinedCiphertext = Buffer.from(encryptedHex, 'hex');
+        const authTagLength = 16;
 
-        // Key derive karke Web Crypto API se decrypt karein
-        const cryptoKey = await deriveCryptoKey(secretKeyText); // [cite: 179]
-        const decryptedBuffer = await window.crypto.subtle.decrypt(
-            { name: "AES-GCM", iv: iv },
-            cryptoKey,
-            ciphertext
-        ); // [cite: 179]
+        if (combinedCiphertext.length < authTagLength) return encryptedPayload;
 
-        // ArrayBuffer ko string aur fir JSON object mein convert karein
-        const decryptedText = textDecoder.decode(decryptedBuffer); // [cite: 180]
-        return JSON.parse(decryptedText); // [cite: 180]
+        const ciphertext = combinedCiphertext.subarray(0, combinedCiphertext.length - authTagLength);
+        const authTag = combinedCiphertext.subarray(combinedCiphertext.length - authTagLength);
 
+        const decipher = crypto.createDecipheriv('aes-256-gcm', keyBuffer, iv);
+        decipher.setAuthTag(authTag);
+
+        let decrypted = decipher.update(ciphertext, 'binary', 'utf-8');
+        decrypted += decipher.final('utf-8');
+
+        return JSON.parse(decrypted);
     } catch (error) {
-        console.error("Client-side decryption failed:", error); // [cite: 180]
-        
-        // Fallback: Agar simple JSON string hai toh parse karo, nahi toh wahi text de do
+        console.error("[Decryption Fail] Passing raw payload data:", error.message);
+        return encryptedPayload;
+    }
+}
+
+// =================================================================
+// 2. DYNAMIC PROXY ROUTE (Handles 429 Rate Limits & 500 Errors)
+// =================================================================
+app.all('/api/proxy', async (req, res) => {
+    const targetUrl = req.query.url;
+    if (!targetUrl) {
+        return res.status(400).json({ error: "Target parameter 'url' required." });
+    }
+
+    let attempts = 0;
+    const maxAttempts = 3;
+    let timingDelay = 2000; // Base delay parameter (Troubleshooting window 1-10s)
+
+    while (attempts < maxAttempts) {
         try {
-            return JSON.parse(encryptedData);
-        } catch (e) {
-            return encryptedData;
+            attempts++;
+            console.log(`[Proxy Request] Target: ${targetUrl} (Attempt ${attempts}/${maxAttempts})`);
+
+            const options = {
+                method: req.method,
+                headers: {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                    'Content-Type': 'application/json'
+                }
+            };
+
+            if (req.method !== 'GET' && req.method !== 'HEAD') {
+                options.body = JSON.stringify(req.body);
+            }
+
+            const apiResponse = await fetch(targetUrl, options);
+
+            // Handle Server Rate Limiting (429) or internal issues (500) gracefully
+            if (apiResponse.status === 429 || apiResponse.status === 500) {
+                console.warn(`[Proxy Warning] Encountered status ${apiResponse.status}. Retrying after backup delay...`);
+                await wait(timingDelay);
+                timingDelay *= 2; // Exponential backoff timing
+                continue;
+            }
+
+            const contentType = apiResponse.headers.get("content-type");
+            let dataPayload;
+
+            if (contentType && contentType.includes("application/json")) {
+                dataPayload = await apiResponse.json();
+            } else {
+                dataPayload = await apiResponse.text();
+            }
+
+            // Auto-check and parse encrypted payloads
+            if (dataPayload && dataPayload.data && typeof dataPayload.data === 'string') {
+                dataPayload.data = decryptBackendPayload(dataPayload.data);
+            } else if (typeof dataPayload === 'string') {
+                dataPayload = decryptBackendPayload(dataPayload);
+            }
+
+            return res.status(apiResponse.status).json(dataPayload);
+
+        } catch (error) {
+            console.error(`[Proxy Catch] Attempt ${attempts} error:`, error.message);
+            if (attempts >= maxAttempts) {
+                return res.status(500).json({ error: "All backend proxy sync sequences failed.", details: error.message });
+            }
+            await wait(timingDelay);
         }
     }
-}
+});
 
-// ==========================================
-// 2. SMART AUTO-DECODER WRAPPER
-// ==========================================
+// Root route to ensure Render health checks always return 200 OK
+app.get('/', (req, res) => {
+    res.status(200).send("Delta Study Centralized Proxy Server Is Running Successfully! 🚀");
+});
 
-/**
- * Automatic Layer: Yeh check karegi ki response json hai, object hai, ya encrypted cipher text hai
- */
-async function processApiResponse(response) {
-    let rawContent;
-    const contentType = response.headers.get("content-type");
-
-    if (contentType && contentType.includes("application/json")) {
-        rawContent = await response.json();
-    } else {
-        rawContent = await response.text();
-    }
-
-    // Case A: Agar pure object mila aur uske andar encrypted '.data' property hai
-    if (rawContent && rawContent.data && typeof rawContent.data === 'string') {
-        console.log("System Check: Encrypted '.data' field detected inside object. Decoding...");
-        return await decryptPayload(rawContent.data);
-    }
-
-    // Case B: Agar poora response hi ek encrypted string hai
-    if (typeof rawContent === 'string' && rawContent.includes(':')) {
-        console.log("System Check: Raw encrypted payload string detected. Decoding...");
-        return await decryptPayload(rawContent);
-    }
-
-    // Case C: Agar data pehle se plain object/JSON hai, toh bina kuch kiye return karo
-    console.log("System Check: Data is already plain JSON or text. Skipping decryption.");
-    return rawContent;
-}
-
-// ==========================================
-// 3. OPTIMIZED FETCH FUNCTION TO USE IN DASHBOARD
-// ==========================================
-
-/**
- * Is function ko aap apne poore project mein API hit karne ke liye run karein
- */
-async function smartFetch(url, options = {}) {
-    try {
-        const response = await fetch(url, options);
-        if (!response.ok) throw new Error(`HTTP error! Status: ${response.status}`); // [cite: 116]
-        
-        // Auto-decode wrapper chalayein
-        const cleanData = await processApiResponse(response);
-        return cleanData;
-    } catch (error) {
-        console.error(`SmartFetch tracking error for URL: ${url}`, error);
-        throw error;
-    }
-}
+// =================================================================
+// 3. CRITICAL RENDER BINDING (Fixes early exit crashes)
+// =================================================================
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, '0.0.0.0', () => {
+    console.log(`[Success] Server is live and listening continuously on port ${PORT}`);
+});
